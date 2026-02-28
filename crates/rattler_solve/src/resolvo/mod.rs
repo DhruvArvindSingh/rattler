@@ -315,14 +315,14 @@ impl<'a> CondaDependencyProvider<'a> {
             .map(|name| pool.intern_package_name(&name))
             .collect();
 
-        // TODO: Normalize these channel names to urls so we can compare them correctly.
+        // We normalize these channel names to urls so we can compare them correctly.
         let channel_specific_specs = match_specs
             .iter()
             .filter(|spec| spec.channel.is_some())
             .collect::<Vec<_>>();
 
         // Hashmap that maps the package name to the channel it was first found in.
-        let mut package_name_found_in_channel = HashMap::<String, &Option<String>>::new();
+        let mut package_name_found_in_channel = HashMap::<String, Option<String>>::new();
 
         // Add additional records
         for repo_data in repodata {
@@ -410,6 +410,16 @@ impl<'a> CondaDependencyProvider<'a> {
                 let solvable_id =
                     pool.intern_solvable(package_name, SolverPackageRecord::Record(record));
 
+                let record_normalized_channel = record.channel.as_deref().map(|c| {
+                    if let Ok(rattler_conda_types::NamedChannelOrUrl::Url(url)) =
+                        std::str::FromStr::from_str(c)
+                    {
+                        rattler_conda_types::ChannelUrl::from(url).to_string()
+                    } else {
+                        c.to_string()
+                    }
+                });
+
                 // Update records with all entries in a single mutable borrow
                 let candidates = records.entry(package_name).or_default();
                 candidates.candidates.push(solvable_id);
@@ -460,7 +470,12 @@ impl<'a> CondaDependencyProvider<'a> {
                         // Check if the spec has a channel, and compare it to the repodata
                         // channel
                         if let Some(spec_channel) = &spec.channel {
-                            if record.channel.as_ref() != Some(&spec_channel.canonical_name()) {
+                            let match_by_url = record_normalized_channel.as_deref()
+                                == Some(spec_channel.base_url.as_str());
+                            let match_by_name = record.channel.as_deref()
+                                == spec_channel.name.as_deref()
+                                && record.channel.is_some();
+                            if !match_by_url && !match_by_name {
                                 tracing::debug!("Ignoring {} {} because it was not requested from that channel.", &record.package_record.name.as_normalized(), match &record.channel {
                                         Some(channel) => format!("from {}", &channel),
                                         None => "without a channel".to_string(),
@@ -489,7 +504,7 @@ impl<'a> CondaDependencyProvider<'a> {
                     channel_priority,
                 ) {
                     // Add the record to the excluded list when it is from a different channel.
-                    if first_channel != &&record.channel {
+                    if first_channel != &record_normalized_channel {
                         if let Some(channel) = &record.channel {
                             tracing::debug!(
                                 "Ignoring '{}' from '{}' because of strict channel priority.",
@@ -516,7 +531,7 @@ impl<'a> CondaDependencyProvider<'a> {
                 } else {
                     package_name_found_in_channel.insert(
                         record.package_record.name.as_normalized().to_string(),
-                        &record.channel,
+                        record_normalized_channel,
                     );
                 }
             }
